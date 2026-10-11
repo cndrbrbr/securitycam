@@ -1,6 +1,6 @@
 # SecurityCams 0.1.0 (Spigot)
 
-Ein erster Spigot-Prototyp zur Verwaltung von Kamera-Standorten und zur Liveansicht.
+**SecurityCams** ist ein Überwachungskamera-Plugin für Minecraft-Spigot-Server. Erstelle Kamerapositionen, öffne eine übersichtliche Kameraauswahl und beobachte Orte live aus der Ferne. Die aktuelle Version 0.1.0 unterstützt Kameraverwaltung und Liveansichten; echte MP4-Aufzeichnungen und eine Video-Zeitleiste sind für spätere Versionen geplant.
 
 ## Voraussetzungen
 - Spigot 1.21.8 (Beispiel-Zielversion; andere Versionen müssen gesondert getestet werden)
