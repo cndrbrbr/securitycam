@@ -1,0 +1,14 @@
+name: SecurityCams
+version: '0.1.0'
+main: de.securitycams.SecurityCamsPlugin
+api-version: '1.21'
+author: SecurityCams
+commands:
+  cam:
+    description: Kameras verwalten
+    usage: /cam <create|list|view|exit|delete>
+permissions:
+  securitycams.use:
+    default: true
+  securitycams.admin:
+    default: op
