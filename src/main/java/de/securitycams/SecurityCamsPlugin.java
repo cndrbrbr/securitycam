@@ -14,6 +14,9 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
@@ -23,6 +26,7 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
@@ -32,15 +36,26 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
-public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
+public final class SecurityCamsPlugin extends JavaPlugin implements Listener, TabCompleter {
     private final Map<String, Location> cameras = new HashMap<>();
     private final Map<UUID, ViewSession> viewers = new HashMap<>();
     private File cameraFile;
+    private File sessionFile;
     private NamespacedKey cameraKey;
 
-    private record ViewSession(Location previous, GameMode mode, UUID standId) {}
+    private static final class ViewSession {
+        private final String cameraId;
+        private final Location previous;
+        private final GameMode mode;
+        private final UUID standId;
+        private boolean attached;
+        private ViewSession(String cameraId, Location previous, GameMode mode, UUID standId) {
+            this.cameraId = cameraId; this.previous = previous; this.mode = mode; this.standId = standId;
+        }
+    }
     private static final class CamMenu implements InventoryHolder {
         private Inventory inventory;
         @Override public Inventory getInventory() { return inventory; }
@@ -49,8 +64,11 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
     @Override public void onEnable() {
         cameraKey = new NamespacedKey(this, "camera_id");
         cameraFile = new File(getDataFolder(), "cameras.yml");
+        sessionFile = new File(getDataFolder(), "sessions.yml");
         loadCameras();
         getServer().getPluginManager().registerEvents(this, this);
+        Bukkit.getScheduler().runTaskTimer(this, this::checkViewers, 1L, 1L);
+        for (Player player : Bukkit.getOnlinePlayers()) restoreStaleSession(player);
         getLogger().info("SecurityCams bereit: " + cameras.size() + " Kameras");
     }
 
@@ -83,16 +101,58 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
         } catch (IOException e) { getLogger().severe("Kameras konnten nicht gespeichert werden: " + e.getMessage()); }
     }
 
+    // Sitzungen werden gespeichert, damit Spieler nach einem Absturz nicht im Zuschauer-Modus bleiben.
+    private void storeSession(UUID uuid, ViewSession session) {
+        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(sessionFile);
+        if (session == null) yaml.set(uuid.toString(), null);
+        else {
+            yaml.set(uuid + ".previous", session.previous);
+            yaml.set(uuid + ".mode", session.mode.name());
+        }
+        try {
+            if (!getDataFolder().exists() && !getDataFolder().mkdirs()) throw new IOException("Datenordner konnte nicht erstellt werden");
+            yaml.save(sessionFile);
+        } catch (IOException e) { getLogger().severe("Sitzung konnte nicht gespeichert werden: " + e.getMessage()); }
+    }
+
+    private void restoreStaleSession(Player player) {
+        if (viewers.containsKey(player.getUniqueId()) || !sessionFile.exists()) return;
+        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(sessionFile);
+        ConfigurationSection section = yaml.getConfigurationSection(player.getUniqueId().toString());
+        if (section == null) return;
+        Location previous = section.getLocation("previous");
+        GameMode mode;
+        try { mode = GameMode.valueOf(section.getString("mode", "SURVIVAL")); }
+        catch (IllegalArgumentException e) { mode = Bukkit.getDefaultGameMode(); }
+        player.setSpectatorTarget(null);
+        player.teleport(previous != null && previous.getWorld() != null ? previous : Bukkit.getWorlds().get(0).getSpawnLocation());
+        player.setGameMode(mode);
+        storeSession(player.getUniqueId(), null);
+        player.sendMessage(ChatColor.YELLOW + "Unterbrochene Kameraansicht wurde beendet.");
+    }
+
+    // Verhindert freies Umherfliegen: Sobald der Spieler die Kamera verlässt (Shift), endet die Ansicht.
+    private void checkViewers() {
+        for (Map.Entry<UUID, ViewSession> entry : new ArrayList<>(viewers.entrySet())) {
+            ViewSession session = entry.getValue();
+            if (!session.attached) continue;
+            Player player = Bukkit.getPlayer(entry.getKey());
+            if (player == null) continue;
+            org.bukkit.entity.Entity target = player.getSpectatorTarget();
+            if (target == null || !target.getUniqueId().equals(session.standId) || !target.isValid()) stopViewing(player, true);
+        }
+    }
+
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof Player player)) { sender.sendMessage("Nur im Spiel verwendbar."); return true; }
-        if (!player.hasPermission("securitycams.use")) { player.sendMessage("Keine Berechtigung."); return true; }
-        if (args.length == 0) { help(player); return true; }
-        String action = args[0].toLowerCase(Locale.ROOT);
+        String action = args.length == 0 ? "" : args[0].toLowerCase(Locale.ROOT);
         if (action.equals("exit")) {
             if (!viewers.containsKey(player.getUniqueId())) player.sendMessage("Du siehst gerade keine Kamera an.");
             else stopViewing(player, true);
             return true;
         }
+        if (!player.hasPermission("securitycams.use")) { player.sendMessage("Keine Berechtigung."); return true; }
+        if (args.length == 0) { help(player); return true; }
         if (action.equals("list")) { openMenu(player); return true; }
         if (args.length < 2) { help(player); return true; }
         String id = args[1].toLowerCase(Locale.ROOT);
@@ -107,13 +167,29 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
             }
             case "delete" -> {
                 if (!player.hasPermission("securitycams.admin")) { player.sendMessage("Keine Berechtigung."); return true; }
-                if (cameras.remove(id) == null) player.sendMessage("Kamera nicht gefunden.");
-                else { saveCameras(); player.sendMessage(ChatColor.GREEN + "Kamera gelöscht: " + id); }
+                if (cameras.remove(id) == null) { player.sendMessage("Kamera nicht gefunden."); return true; }
+                saveCameras();
+                for (Map.Entry<UUID, ViewSession> entry : new ArrayList<>(viewers.entrySet())) {
+                    Player viewer = Bukkit.getPlayer(entry.getKey());
+                    if (viewer != null && entry.getValue().cameraId.equals(id)) stopViewing(viewer, true);
+                }
+                player.sendMessage(ChatColor.GREEN + "Kamera gelöscht: " + id);
             }
             case "view" -> viewCamera(player, id);
             default -> help(player);
         }
         return true;
+    }
+
+    @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length == 1) {
+            List<String> actions = new ArrayList<>(List.of("list", "view", "exit"));
+            if (sender.hasPermission("securitycams.admin")) actions.addAll(List.of("create", "delete"));
+            return actions.stream().filter(a -> a.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
+        }
+        if (args.length == 2 && Set.of("view", "delete").contains(args[0].toLowerCase(Locale.ROOT)))
+            return cameras.keySet().stream().filter(id -> id.startsWith(args[1].toLowerCase(Locale.ROOT))).sorted().toList();
+        return List.of();
     }
 
     private void help(Player player) {
@@ -143,8 +219,8 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
 
     @EventHandler public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getView().getTopInventory().getHolder() instanceof CamMenu)) return;
-        if (event.getRawSlot() < event.getView().getTopInventory().getSize()) {
-            event.setCancelled(true);
+        event.setCancelled(true);
+        if (event.getRawSlot() >= 0 && event.getRawSlot() < event.getView().getTopInventory().getSize()) {
             ItemStack item = event.getCurrentItem();
             if (item == null || !item.hasItemMeta()) return;
             String id = item.getItemMeta().getPersistentDataContainer().get(cameraKey, PersistentDataType.STRING);
@@ -153,12 +229,27 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
         }
     }
 
+    @EventHandler public void onInventoryDrag(InventoryDragEvent event) {
+        if (event.getView().getTopInventory().getHolder() instanceof CamMenu) event.setCancelled(true);
+    }
+
+    // Zuschauer-Teleport zu anderen Spielern (Zuschauermenü) während der Kameraansicht sperren.
+    @EventHandler public void onTeleport(PlayerTeleportEvent event) {
+        if (event.getCause() == PlayerTeleportEvent.TeleportCause.SPECTATE && viewers.containsKey(event.getPlayer().getUniqueId()))
+            event.setCancelled(true);
+    }
+
+    @EventHandler public void onJoin(PlayerJoinEvent event) {
+        restoreStaleSession(event.getPlayer());
+    }
+
     private void viewCamera(Player player, String id) {
         Location location = cameras.get(id);
         if (location == null || location.getWorld() == null) { player.sendMessage("Kamera nicht gefunden oder Welt nicht geladen."); return; }
         if (viewers.containsKey(player.getUniqueId())) stopViewing(player, false);
         Location previous = player.getLocation().clone();
         GameMode oldMode = player.getGameMode();
+        if (oldMode == GameMode.SPECTATOR) { player.sendMessage("Im Zuschauer-Modus nicht verfügbar."); return; }
         ArmorStand stand = (ArmorStand) location.getWorld().spawnEntity(location, EntityType.ARMOR_STAND);
         stand.setVisible(false);
         stand.setGravity(false);
@@ -167,13 +258,17 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
         stand.setSilent(true);
         stand.setPersistent(false);
         stand.setRotation(location.getYaw(), location.getPitch());
-        viewers.put(player.getUniqueId(), new ViewSession(previous, oldMode, stand.getUniqueId()));
+        ViewSession session = new ViewSession(id, previous, oldMode, stand.getUniqueId());
+        viewers.put(player.getUniqueId(), session);
+        storeSession(player.getUniqueId(), session);
         player.setGameMode(GameMode.SPECTATOR);
         player.teleport(location);
         Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (!player.isOnline() || !viewers.containsKey(player.getUniqueId()) || !stand.isValid()) return;
+            if (!player.isOnline() || viewers.get(player.getUniqueId()) != session) return;
+            if (!stand.isValid()) { stopViewing(player, false); player.sendMessage("Kamera konnte nicht geöffnet werden."); return; }
             player.setSpectatorTarget(stand);
-            player.sendMessage(ChatColor.GREEN + "Kamera: " + id + ChatColor.GRAY + " | Verlassen: /cam exit");
+            session.attached = true;
+            player.sendMessage(ChatColor.GREEN + "Kamera: " + id + ChatColor.GRAY + " | Verlassen: Shift oder /cam exit");
         }, 2L);
     }
 
@@ -181,9 +276,10 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener {
         ViewSession session = viewers.remove(player.getUniqueId());
         if (session == null) return;
         player.setSpectatorTarget(null);
-        if (session.previous().getWorld() != null) player.teleport(session.previous());
-        player.setGameMode(session.mode());
-        org.bukkit.entity.Entity entity = Bukkit.getEntity(session.standId());
+        player.teleport(session.previous.getWorld() != null ? session.previous : Bukkit.getWorlds().get(0).getSpawnLocation());
+        player.setGameMode(session.mode);
+        storeSession(player.getUniqueId(), null);
+        org.bukkit.entity.Entity entity = Bukkit.getEntity(session.standId);
         if (entity != null) entity.remove();
         if (notify) player.sendMessage(ChatColor.GREEN + "Kameraansicht verlassen.");
     }
