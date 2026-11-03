@@ -11,6 +11,8 @@ import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -25,6 +27,8 @@ final class WebServer {
     private final Map<String, Location> cameras;
     private final byte[] token;
     private final Semaphore streamSlots;
+    private final byte[] page;
+    private final String pageVersion;
     private final ExecutorService executor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "SecurityCams-Web");
         t.setDaemon(true);
@@ -39,6 +43,20 @@ final class WebServer {
         this.cameras = cameras;
         this.token = token.getBytes(StandardCharsets.UTF_8);
         this.streamSlots = new Semaphore(Math.max(1, maxStreams));
+        // Seitenversion = Hash der Seite; die Seite lädt sich neu, wenn der Server eine andere meldet.
+        String html;
+        try (InputStream in = plugin.getResource("web/index.html")) {
+            html = in == null ? "Ressource fehlt" : new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            html = "Ressource fehlt";
+        }
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(html.getBytes(StandardCharsets.UTF_8));
+            pageVersion = HexFormat.of().formatHex(hash, 0, 6);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+        page = html.replace("__PAGE_VERSION__", pageVersion).getBytes(StandardCharsets.UTF_8);
     }
 
     void start(String bind, int port) throws IOException {
@@ -62,11 +80,16 @@ final class WebServer {
             if (!authorized(ex)) { send(ex, 401, "text/plain; charset=utf-8", "Zugriff verweigert: ?token=... fehlt oder ist falsch."); return; }
             if (path.equals("/")) {
                 ex.getResponseHeaders().add("Set-Cookie", "sctoken=" + new String(token, StandardCharsets.UTF_8) + "; Path=/; HttpOnly; SameSite=Strict");
-                sendResource(ex, "web/index.html", "text/html; charset=utf-8");
+                ex.getResponseHeaders().add("Cache-Control", "no-store");
+                ex.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
+                ex.sendResponseHeaders(200, page.length);
+                ex.getResponseBody().write(page);
             } else if (path.equals("/api/cameras")) {
                 String json = cameras.entrySet().stream().sorted(Map.Entry.comparingByKey())
                         .map(e -> "{\"id\":\"" + e.getKey() + "\",\"world\":\"" + (e.getValue().getWorld() == null ? "" : jsonEscape(e.getValue().getWorld().getName())) + "\"}")
                         .collect(Collectors.joining(",", "[", "]"));
+                ex.getResponseHeaders().add("X-SecurityCams-Page", pageVersion);
+                ex.getResponseHeaders().add("Cache-Control", "no-store");
                 send(ex, 200, "application/json", json);
             } else if (path.startsWith("/cam/") && path.endsWith(".jpg")) {
                 snapshot(ex, path.substring(5, path.length() - 4));
@@ -138,16 +161,6 @@ final class WebServer {
             Thread.currentThread().interrupt();
         } finally {
             streamSlots.release();
-        }
-    }
-
-    private void sendResource(HttpExchange ex, String name, String type) throws IOException {
-        try (InputStream in = plugin.getResource(name)) {
-            if (in == null) { send(ex, 500, "text/plain", "Ressource fehlt"); return; }
-            byte[] body = in.readAllBytes();
-            ex.getResponseHeaders().add("Content-Type", type);
-            ex.sendResponseHeaders(200, body.length);
-            ex.getResponseBody().write(body);
         }
     }
 
