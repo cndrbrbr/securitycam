@@ -61,6 +61,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         private final UUID standId;
         private boolean attached;
         private int reattachCount;
+        private boolean confirmed;
         private ViewSession(String cameraId, Location previous, GameMode mode, UUID standId) {
             this.cameraId = cameraId; this.previous = previous; this.mode = mode; this.standId = standId;
         }
@@ -173,7 +174,6 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         player.sendMessage(ChatColor.YELLOW + "Unterbrochene Kameraansicht wurde beendet.");
     }
 
-    // Verhindert freies Umherfliegen: Verliert der Spieler das Kameraziel ohne Shift, wird es neu gesetzt.
     // setSpectatorTarget teleportiert intern mit Ursache SPECTATE; diese Teleports dürfen nicht blockiert werden.
     private boolean attach(Player player, org.bukkit.entity.Entity stand) {
         attaching = player.getUniqueId();
@@ -183,6 +183,9 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         return target != null && target.getUniqueId().equals(stand.getUniqueId());
     }
 
+    // Absicherung zu onSneak: Hat das Kameraziel einmal gegriffen, beendet jeder Verlust (Vanilla löst die Kamera
+    // bei Shift, Kamera-Entity weg) die Ansicht, sodass kein freies Umherfliegen möglich ist.
+    // Vor der ersten Bestätigung wird das Setzen wiederholt.
     private void checkViewers() {
         for (Map.Entry<UUID, ViewSession> entry : new ArrayList<>(viewers.entrySet())) {
             ViewSession session = entry.getValue();
@@ -190,18 +193,22 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
             Player player = Bukkit.getPlayer(entry.getKey());
             if (player == null) continue;
             org.bukkit.entity.Entity target = player.getSpectatorTarget();
-            if (target != null && target.getUniqueId().equals(session.standId)) continue;
+            if (target != null && target.getUniqueId().equals(session.standId)) { session.confirmed = true; continue; }
             org.bukkit.entity.Entity stand = Bukkit.getEntity(session.standId);
-            if (stand == null || !stand.isValid()) {
-                getLogger().info("Ansicht " + player.getName() + "/" + session.cameraId + " beendet: Kamera-Entity ungültig");
+            if (session.confirmed || stand == null || !stand.isValid()) {
+                getLogger().info("Ansicht " + player.getName() + "/" + session.cameraId + " beendet: "
+                        + (session.confirmed ? "Kamera verlassen (Shift)" : "Kamera-Entity ungültig"));
                 stopViewing(player, true);
                 continue;
             }
-            session.reattachCount++;
-            if (session.reattachCount <= 3 || session.reattachCount % 100 == 0)
-                getLogger().info("Ansicht " + player.getName() + "/" + session.cameraId + ": Ziel verloren (" + (target == null ? "null" : target.getType()) + "), neu gesetzt #" + session.reattachCount);
+            if (++session.reattachCount > 40) {
+                getLogger().warning("Ansicht " + player.getName() + "/" + session.cameraId + " beendet: Kameraziel lässt sich nicht setzen");
+                stopViewing(player, false);
+                player.sendMessage("Kamera konnte nicht geöffnet werden.");
+                continue;
+            }
             if (player.getLocation().distanceSquared(stand.getLocation()) > 1) player.teleport(stand.getLocation());
-            attach(player, stand);
+            session.confirmed = attach(player, stand);
         }
     }
 
@@ -342,7 +349,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (!player.isOnline() || viewers.get(player.getUniqueId()) != session) return;
             if (!stand.isValid()) { stopViewing(player, false); player.sendMessage("Kamera konnte nicht geöffnet werden."); return; }
-            if (!attach(player, stand)) getLogger().warning("Kameraziel für " + player.getName() + "/" + id + " konnte nicht gesetzt werden");
+            session.confirmed = attach(player, stand);
             session.attached = true;
             player.sendMessage(ChatColor.GREEN + "Kamera: " + id + ChatColor.GRAY + " | Verlassen: Shift oder /cam exit");
         }, 2L);
