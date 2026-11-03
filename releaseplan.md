@@ -25,7 +25,7 @@ The plugin renders the camera images itself, on the Minecraft server (a simplifi
 1. **Sub-path support.** The plugin's own page fetches `/api/cameras` and `/cam/…` from the root, so it breaks behind `/cams/mc1/`. Either the central page builds its own URLs (simplest), or the plugin switches to relative URLs.
 2. **Server load.** Rendering only runs while someone watches, so a public page means rendering all the time. Each watched camera keeps its chunks loaded and uses the two render threads at 4 fps by default. With many cameras this hurts nc3 mc4 (two parallel BlueMap renders already pushed it to ~10/10 cores). For the public setup, lower `render.fps` (1–2) and `render.distance`.
 3. **Request limit.** `max-streams: 16` only limits MJPEG streams. Snapshot requests (`/cam/<id>.jpg`) can each wait up to 10 s, and nothing limits how many run at once (cached thread pool), so many visitors can exhaust the web server. Add a limit for snapshots in the plugin and/or a rate limit in Caddy.
-4. **Privacy.** The images show player names as labels, and the players are school kids. Decide whether the page is public or behind a login (Caddy basic auth, or linked from the admin page). Tell players that cameras exist.
+4. **Privacy.** The page will be **public** (decided 2026-11-03). The images show player names as labels, and the players are school kids, so: tell players that cameras exist (notice on the page and in-game, e.g. MOTD or a sign at each camera). Because the page is public, the request limit (point 3) and a Caddy rate limit are mandatory.
 
 ## Steps
 
@@ -33,6 +33,6 @@ The plugin renders the camera images itself, on the Minecraft server (a simplifi
 2. Pilot on one server (meck mc1): create a camera, connect the meck Caddy, build `kameras.html`.
 3. Roll out to the other servers one at a time: meck lobby, mc2–mc5, then nc3 mc2–mc5 and codefield (each with a Caddy block on its host).
 
-## Open decisions
+## Decisions
 
-- Public page or login-protected?
+- 2026-11-03: the page is **public** (no login).
