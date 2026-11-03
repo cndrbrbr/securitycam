@@ -33,8 +33,35 @@
   const grid = document.getElementById('grid'), meta = document.getElementById('meta');
   const full = document.getElementById('full'), fullImg = full.querySelector('img');
   const tiles = new Map();
+  let fullId = null;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  function streamUrl(id) { return '/cam/' + encodeURIComponent(id) + '.mjpg?t=' + Date.now(); }
+  // Holt fortlaufend Einzelbilder; erkennt Abbrüche selbst und verbindet nach Neustarts automatisch neu.
+  async function play(id, img, state) {
+    let objectUrl = null, fails = 0;
+    while (tiles.has(id) && (img !== fullImg || fullId === id)) {
+      const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch('/cam/' + encodeURIComponent(id) + '.jpg?t=' + Date.now(), { cache: 'no-store', signal: ctrl.signal });
+        if (res.status === 401) throw new Error('Token ungültig – Seite mit ?token=… neu öffnen');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const url = URL.createObjectURL(await res.blob());
+        img.src = url;
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = url;
+        fails = 0;
+        if (state) { state.textContent = 'LIVE'; state.className = 'state ok'; }
+        await sleep(250);
+      } catch (e) {
+        fails++;
+        if (state) { state.textContent = e.name === 'AbortError' || e instanceof TypeError ? 'getrennt' : e.message; state.className = 'state err'; }
+        await sleep(Math.min(5000, 1000 * fails));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
 
   function addTile(cam) {
     const tile = document.createElement('div');
@@ -44,23 +71,22 @@
     tile.querySelector('b').textContent = cam.id;
     tile.querySelector('.world').textContent = cam.world;
     img.alt = 'Kamera ' + cam.id;
-    img.onload = () => { state.textContent = 'LIVE'; state.className = 'state ok'; };
-    img.onerror = () => { state.textContent = 'getrennt'; state.className = 'state err'; setTimeout(() => { if (tiles.has(cam.id)) img.src = streamUrl(cam.id); }, 3000); };
-    img.src = streamUrl(cam.id);
-    tile.onclick = () => { fullImg.src = streamUrl(cam.id); fullImg.alt = img.alt; full.classList.add('open'); };
+    tile.onclick = () => { fullId = cam.id; fullImg.alt = img.alt; full.classList.add('open'); play(cam.id, fullImg, null); };
     tiles.set(cam.id, tile);
+    play(cam.id, img, state);
     return tile;
   }
 
-  full.onclick = () => { full.classList.remove('open'); fullImg.removeAttribute('src'); };
+  full.onclick = () => { fullId = null; full.classList.remove('open'); fullImg.removeAttribute('src'); };
 
   async function refresh() {
     try {
       const res = await fetch('/api/cameras', { cache: 'no-store' });
+      if (res.status === 401) { meta.textContent = 'Token ungültig'; return; }
       if (!res.ok) throw new Error(res.status);
       const cams = await res.json();
       const ids = new Set(cams.map(c => c.id));
-      for (const [id, tile] of tiles) if (!ids.has(id)) { tile.querySelector('img').removeAttribute('src'); tile.remove(); tiles.delete(id); }
+      for (const [id, tile] of tiles) if (!ids.has(id)) { tile.remove(); tiles.delete(id); }
       for (const cam of cams) if (!tiles.has(cam.id)) grid.appendChild(addTile(cam));
       grid.querySelector('.empty')?.remove();
       if (!cams.length) grid.innerHTML = '<div class="empty">Keine Kameras. Im Spiel mit /cam create &lt;name&gt; anlegen.</div>';
