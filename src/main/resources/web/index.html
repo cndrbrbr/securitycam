@@ -32,13 +32,26 @@
 <script>
   const grid = document.getElementById('grid'), meta = document.getElementById('meta');
   const full = document.getElementById('full'), fullImg = full.querySelector('img');
+  const PAGE_VERSION = '__PAGE_VERSION__';
+  const STALE_RELOAD_MS = 60000;
   const tiles = new Map();
+
+  // Höchstens ein Hänger-Neuladen alle 5 Minuten, damit eine dauerhaft defekte Kamera keine Reload-Schleife auslöst
+  function reloadAllowed() {
+    try {
+      const last = Number(sessionStorage.getItem('sc-stale-reload') || 0);
+      if (Date.now() - last < 300000) return false;
+      sessionStorage.setItem('sc-stale-reload', String(Date.now()));
+    } catch (e) { /* ohne Storage trotzdem neu laden */ }
+    return true;
+  }
   let fullId = null;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // Holt fortlaufend Einzelbilder; erkennt Abbrüche selbst und verbindet nach Neustarts automatisch neu.
   async function play(id, img, state) {
     let objectUrl = null, fails = 0;
+    const tile = tiles.get(id);
     while (tiles.has(id) && (img !== fullImg || fullId === id)) {
       const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 8000);
       try {
@@ -50,6 +63,7 @@
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         objectUrl = url;
         fails = 0;
+        if (tile && img !== fullImg) tile.lastOk = Date.now();
         if (state) { state.textContent = 'LIVE'; state.className = 'state ok'; }
         await sleep(250);
       } catch (e) {
@@ -72,6 +86,7 @@
     tile.querySelector('.world').textContent = cam.world;
     img.alt = 'Kamera ' + cam.id;
     tile.onclick = () => { fullId = cam.id; fullImg.alt = img.alt; full.classList.add('open'); play(cam.id, fullImg, null); };
+    tile.lastOk = Date.now();
     tiles.set(cam.id, tile);
     play(cam.id, img, state);
     return tile;
@@ -84,6 +99,10 @@
       const res = await fetch('/api/cameras', { cache: 'no-store' });
       if (res.status === 401) { meta.textContent = 'Token ungültig'; return; }
       if (!res.ok) throw new Error(res.status);
+      // Watchdog: Server erreichbar, aber Seite veraltet oder alle Kacheln hängen -> komplett neu laden
+      const serverVersion = res.headers.get('X-SecurityCams-Page');
+      if (serverVersion && serverVersion !== PAGE_VERSION) { location.reload(); return; }
+      if (tiles.size && [...tiles.values()].every(t => Date.now() - t.lastOk > STALE_RELOAD_MS) && reloadAllowed()) { location.reload(); return; }
       const cams = await res.json();
       const ids = new Set(cams.map(c => c.id));
       for (const [id, tile] of tiles) if (!ids.has(id)) { tile.remove(); tiles.delete(id); }
