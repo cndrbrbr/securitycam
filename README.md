@@ -1,6 +1,6 @@
-# SecurityCams 0.1.0 (Spigot)
+# SecurityCams 0.2.0 (Spigot)
 
-**SecurityCams** ist ein Überwachungskamera-Plugin für Minecraft-Spigot-Server. Erstelle Kamerapositionen, öffne eine übersichtliche Kameraauswahl und beobachte Orte live aus der Ferne. Die aktuelle Version 0.1.0 unterstützt Kameraverwaltung und Liveansichten; echte MP4-Aufzeichnungen und eine Video-Zeitleiste sind für spätere Versionen geplant.
+**SecurityCams** ist ein Überwachungskamera-Plugin für Minecraft-Spigot-Server. Erstelle Kamerapositionen, öffne eine übersichtliche Kameraauswahl und beobachte Orte live aus der Ferne. Version 0.2.0 unterstützt Kameraverwaltung, Liveansichten im Spiel und eine Web-Ansicht aller Kameras im Browser; Aufzeichnungen und eine Video-Zeitleiste sind für spätere Versionen geplant.
 
 ## Voraussetzungen
 - Spigot 26.3 (aktuelle Version; gebaut gegen `spigot-api 26.3-R0.1-SNAPSHOT`)
@@ -11,7 +11,7 @@
 ```sh
 mvn clean package
 ```
-Die Plugin-JAR liegt unter `target/securitycams-0.1.0.jar`.
+Die Plugin-JAR liegt unter `target/securitycams-0.2.0.jar`.
 In den `plugins/`-Ordner kopieren und den Server neu starten.
 
 ## Befehle
@@ -36,7 +36,7 @@ Das Plugin rendert die Kamerabilder selbst (Raycasting über die Blöcke, ca. 32
 - `securitycams.admin` (Standard: OP)
 
 ## Einschränkungen
-- **Keine Videoaufnahme / MP4 in Version 0.1.0**: Ein separater Minecraft-Client mit OBS/FFmpeg muss das Bild rendern und aufnehmen; Spigot liefert keine Videoframes.
+- **Keine Aufzeichnung in Version 0.2.0**: Die Web-Ansicht ist reine Liveansicht; es werden keine Bilder gespeichert.
 - Temporärer unsichtbarer ArmorStand als Spectator-Ziel.
 - Noch keine kamerabezogenen Zugriffsrechte und keine Aufzeichnungs-Timeline.
 - Übersicht zeigt maximal 54 Kameras.
