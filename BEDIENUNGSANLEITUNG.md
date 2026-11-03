@@ -37,7 +37,7 @@ Gib ein:
 /cam exit
 ```
 
-Du kehrst zu deinem vorherigen Standort und Spielmodus zurück. Benutze zum Verlassen möglichst immer diesen Befehl.
+Alternativ drückst du **Shift** (Schleichen). Du kehrst zu deinem vorherigen Standort und Spielmodus zurück. Freies Umherfliegen und Teleports zu anderen Spielern sind während der Kameraansicht nicht möglich.
 
 ## Für Admins: Kameras einrichten
 
@@ -71,7 +71,7 @@ Dadurch wird der gespeicherte Kamerastandort gelöscht. Es erfolgt derzeit keine
 | --- | --- | --- |
 | `/cam list` | Kameraübersicht öffnen | `securitycams.use` |
 | `/cam view <name>` | Kamera live ansehen | `securitycams.use` |
-| `/cam exit` | Ansicht verlassen | `securitycams.use` |
+| `/cam exit` | Ansicht verlassen (auch per Shift) | – |
 | `/cam create <name>` | Kamera speichern | `securitycams.admin` |
 | `/cam delete <name>` | Kamera löschen | `securitycams.admin` |
 
@@ -92,7 +92,7 @@ Das Plugin zeigt eine Kamera-Perspektive im Zuschauer-Modus. Es besitzt noch kei
 Noch nicht. MP4-Videoaufzeichnungen, Wiedergabe und Aufzeichnungsarchiv sind für eine spätere Version geplant. Ein reines Spigot-Plugin kann nicht selbst das Bild der Minecraft-Spielwelt als MP4 rendern; dafür ist ein zusätzlicher Aufnahme-Client erforderlich.
 
 **Was passiert nach einem Serverneustart?**  
-Gespeicherte Kamerapositionen werden in `plugins/SecurityCams/cameras.yml` gespeichert und beim Start geladen. Nach einem Serverabsturz während der Kameraansicht ist die automatische Wiederherstellung des vorherigen Spielmodus derzeit nicht garantiert.
+Gespeicherte Kamerapositionen werden in `plugins/SecurityCams/cameras.yml` gespeichert und beim Start geladen. Stürzt der Server während einer Kameraansicht ab, wirst du beim nächsten Login automatisch an deinen vorherigen Standort zurückgesetzt und erhältst deinen vorherigen Spielmodus zurück.
 
 ## Hinweise
 
