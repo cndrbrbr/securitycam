@@ -6,7 +6,7 @@ author: SecurityCams
 commands:
   cam:
     description: Kameras verwalten
-    usage: /cam <create|list|view|exit|delete>
+    usage: /cam <create|list|view|exit|delete|web>
 permissions:
   securitycams.use:
     default: true

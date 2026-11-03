@@ -18,6 +18,7 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerToggleSneakEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -38,13 +39,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.security.SecureRandom;
+import java.util.HexFormat;
 
 public final class SecurityCamsPlugin extends JavaPlugin implements Listener, TabCompleter {
-    private final Map<String, Location> cameras = new HashMap<>();
+    private final Map<String, Location> cameras = new ConcurrentHashMap<>();
     private final Map<UUID, ViewSession> viewers = new HashMap<>();
     private File cameraFile;
     private File sessionFile;
     private NamespacedKey cameraKey;
+    private UUID attaching;
+    private CameraStreams streams;
+    private WebServer web;
+    private String webUrl;
 
     private static final class ViewSession {
         private final String cameraId;
@@ -52,6 +60,8 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         private final GameMode mode;
         private final UUID standId;
         private boolean attached;
+        private int reattachCount;
+        private boolean confirmed;
         private ViewSession(String cameraId, Location previous, GameMode mode, UUID standId) {
             this.cameraId = cameraId; this.previous = previous; this.mode = mode; this.standId = standId;
         }
@@ -69,10 +79,43 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         getServer().getPluginManager().registerEvents(this, this);
         Bukkit.getScheduler().runTaskTimer(this, this::checkViewers, 1L, 1L);
         for (Player player : Bukkit.getOnlinePlayers()) restoreStaleSession(player);
+        startWeb();
         getLogger().info("SecurityCams bereit: " + cameras.size() + " Kameras");
     }
 
+    private void startWeb() {
+        saveDefaultConfig();
+        if (!getConfig().getBoolean("web.enabled", true)) return;
+        String token = getConfig().getString("web.token", "");
+        if (token == null || token.isBlank()) {
+            byte[] bytes = new byte[18];
+            new SecureRandom().nextBytes(bytes);
+            token = HexFormat.of().formatHex(bytes);
+            getConfig().set("web.token", token);
+            saveConfig();
+        }
+        System.setProperty("java.awt.headless", "true");
+        String bind = getConfig().getString("web.bind", "0.0.0.0");
+        int port = getConfig().getInt("web.port", 8090);
+        streams = new CameraStreams(this, cameras);
+        web = new WebServer(this, streams, cameras, token, getConfig().getInt("web.max-streams", 16));
+        try {
+            web.start(bind, port);
+            streams.start();
+            String host = bind.equals("0.0.0.0") ? (Bukkit.getIp().isBlank() ? "<server-ip>" : Bukkit.getIp()) : bind;
+            webUrl = "http://" + host + ":" + port + "/?token=" + token;
+            getLogger().info("Web-Ansicht: " + webUrl);
+        } catch (IOException e) {
+            getLogger().severe("Webserver konnte nicht starten (Port " + port + "): " + e.getMessage());
+            streams.stop();
+            web = null;
+            streams = null;
+        }
+    }
+
     @Override public void onDisable() {
+        if (web != null) web.stop();
+        if (streams != null) streams.stop();
         for (UUID uuid : new ArrayList<>(viewers.keySet())) {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null) stopViewing(player, false);
@@ -131,7 +174,18 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         player.sendMessage(ChatColor.YELLOW + "Unterbrochene Kameraansicht wurde beendet.");
     }
 
-    // Verhindert freies Umherfliegen: Sobald der Spieler die Kamera verlässt (Shift), endet die Ansicht.
+    // setSpectatorTarget teleportiert intern mit Ursache SPECTATE; diese Teleports dürfen nicht blockiert werden.
+    private boolean attach(Player player, org.bukkit.entity.Entity stand) {
+        attaching = player.getUniqueId();
+        try { player.setSpectatorTarget(stand); }
+        finally { attaching = null; }
+        org.bukkit.entity.Entity target = player.getSpectatorTarget();
+        return target != null && target.getUniqueId().equals(stand.getUniqueId());
+    }
+
+    // Absicherung zu onSneak: Hat das Kameraziel einmal gegriffen, beendet jeder Verlust (Vanilla löst die Kamera
+    // bei Shift, Kamera-Entity weg) die Ansicht, sodass kein freies Umherfliegen möglich ist.
+    // Vor der ersten Bestätigung wird das Setzen wiederholt.
     private void checkViewers() {
         for (Map.Entry<UUID, ViewSession> entry : new ArrayList<>(viewers.entrySet())) {
             ViewSession session = entry.getValue();
@@ -139,8 +193,31 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
             Player player = Bukkit.getPlayer(entry.getKey());
             if (player == null) continue;
             org.bukkit.entity.Entity target = player.getSpectatorTarget();
-            if (target == null || !target.getUniqueId().equals(session.standId) || !target.isValid()) stopViewing(player, true);
+            if (target != null && target.getUniqueId().equals(session.standId)) { session.confirmed = true; continue; }
+            org.bukkit.entity.Entity stand = Bukkit.getEntity(session.standId);
+            if (session.confirmed || stand == null || !stand.isValid()) {
+                getLogger().info("Ansicht " + player.getName() + "/" + session.cameraId + " beendet: "
+                        + (session.confirmed ? "Kamera verlassen (Shift)" : "Kamera-Entity ungültig"));
+                stopViewing(player, true);
+                continue;
+            }
+            if (++session.reattachCount > 40) {
+                getLogger().warning("Ansicht " + player.getName() + "/" + session.cameraId + " beendet: Kameraziel lässt sich nicht setzen");
+                stopViewing(player, false);
+                player.sendMessage("Kamera konnte nicht geöffnet werden.");
+                continue;
+            }
+            if (player.getLocation().distanceSquared(stand.getLocation()) > 1) player.teleport(stand.getLocation());
+            session.confirmed = attach(player, stand);
         }
+    }
+
+    // Shift beendet die Kameraansicht.
+    @EventHandler public void onSneak(PlayerToggleSneakEvent event) {
+        ViewSession session = viewers.get(event.getPlayer().getUniqueId());
+        if (session == null || !session.attached || !event.isSneaking()) return;
+        getLogger().info("Ansicht " + event.getPlayer().getName() + "/" + session.cameraId + " beendet: Shift");
+        stopViewing(event.getPlayer(), true);
     }
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -154,6 +231,11 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         if (!player.hasPermission("securitycams.use")) { player.sendMessage("Keine Berechtigung."); return true; }
         if (args.length == 0) { help(player); return true; }
         if (action.equals("list")) { openMenu(player); return true; }
+        if (action.equals("web")) {
+            if (!player.hasPermission("securitycams.admin")) player.sendMessage("Keine Berechtigung.");
+            else player.sendMessage(webUrl == null ? "Web-Ansicht ist deaktiviert." : ChatColor.AQUA + "Web-Ansicht: " + webUrl);
+            return true;
+        }
         if (args.length < 2) { help(player); return true; }
         String id = args[1].toLowerCase(Locale.ROOT);
         if (!id.matches("[a-z0-9_-]{1,32}")) { player.sendMessage("Kameraname: 1-32 Zeichen (a-z, 0-9, _ und -)."); return true; }
@@ -184,7 +266,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
     @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             List<String> actions = new ArrayList<>(List.of("list", "view", "exit"));
-            if (sender.hasPermission("securitycams.admin")) actions.addAll(List.of("create", "delete"));
+            if (sender.hasPermission("securitycams.admin")) actions.addAll(List.of("create", "delete", "web"));
             return actions.stream().filter(a -> a.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && Set.of("view", "delete").contains(args[0].toLowerCase(Locale.ROOT)))
@@ -194,7 +276,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
 
     private void help(Player player) {
         player.sendMessage(ChatColor.GOLD + "SecurityCams: /cam list, /cam view <name>, /cam exit");
-        player.sendMessage(ChatColor.GRAY + "Administratoren: /cam create <name>, /cam delete <name>");
+        player.sendMessage(ChatColor.GRAY + "Administratoren: /cam create <name>, /cam delete <name>, /cam web");
     }
 
     private void openMenu(Player player) {
@@ -235,7 +317,8 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
 
     // Zuschauer-Teleport zu anderen Spielern (Zuschauermenü) während der Kameraansicht sperren.
     @EventHandler public void onTeleport(PlayerTeleportEvent event) {
-        if (event.getCause() == PlayerTeleportEvent.TeleportCause.SPECTATE && viewers.containsKey(event.getPlayer().getUniqueId()))
+        if (event.getCause() == PlayerTeleportEvent.TeleportCause.SPECTATE && viewers.containsKey(event.getPlayer().getUniqueId())
+                && !event.getPlayer().getUniqueId().equals(attaching))
             event.setCancelled(true);
     }
 
@@ -266,7 +349,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (!player.isOnline() || viewers.get(player.getUniqueId()) != session) return;
             if (!stand.isValid()) { stopViewing(player, false); player.sendMessage("Kamera konnte nicht geöffnet werden."); return; }
-            player.setSpectatorTarget(stand);
+            session.confirmed = attach(player, stand);
             session.attached = true;
             player.sendMessage(ChatColor.GREEN + "Kamera: " + id + ChatColor.GRAY + " | Verlassen: Shift oder /cam exit");
         }, 2L);

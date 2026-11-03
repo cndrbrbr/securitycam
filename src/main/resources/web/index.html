@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecurityCams</title>
+<style>
+  :root { --bg: #0b0d10; --panel: #14181d; --line: #262c34; --text: #d7dde4; --muted: #7d8794; --live: #e5484d; --ok: #3fb950; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: .08em; }
+  header .meta { margin-left: auto; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live); box-shadow: 0 0 8px var(--live); animation: blink 1.6s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  main { display: grid; gap: 12px; padding: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: zoom-in; }
+  .tile img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; image-rendering: pixelated; }
+  .tile .bar { display: flex; justify-content: space-between; padding: 7px 10px; color: var(--muted); }
+  .tile .bar b { color: var(--text); font-weight: 600; }
+  .state.ok { color: var(--ok); } .state.err { color: var(--live); }
+  .empty { grid-column: 1 / -1; padding: 48px 16px; text-align: center; color: var(--muted); }
+  .full { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: none; align-items: center; justify-content: center; padding: 16px; cursor: zoom-out; }
+  .full.open { display: flex; }
+  .full img { max-width: 100%; max-height: 100%; aspect-ratio: 16 / 9; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<header><span class="dot"></span><h1>SECURITYCAMS</h1><span class="meta" id="meta">…</span></header>
+<main id="grid"></main>
+<div class="full" id="full"><img alt=""></div>
+<script>
+  const grid = document.getElementById('grid'), meta = document.getElementById('meta');
+  const full = document.getElementById('full'), fullImg = full.querySelector('img');
+  const tiles = new Map();
+  let fullId = null;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Holt fortlaufend Einzelbilder; erkennt Abbrüche selbst und verbindet nach Neustarts automatisch neu.
+  async function play(id, img, state) {
+    let objectUrl = null, fails = 0;
+    while (tiles.has(id) && (img !== fullImg || fullId === id)) {
+      const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch('/cam/' + encodeURIComponent(id) + '.jpg?t=' + Date.now(), { cache: 'no-store', signal: ctrl.signal });
+        if (res.status === 401) throw new Error('Token ungültig – Seite mit ?token=… neu öffnen');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const url = URL.createObjectURL(await res.blob());
+        img.src = url;
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        objectUrl = url;
+        fails = 0;
+        if (state) { state.textContent = 'LIVE'; state.className = 'state ok'; }
+        await sleep(250);
+      } catch (e) {
+        fails++;
+        if (state) { state.textContent = e.name === 'AbortError' || e instanceof TypeError ? 'getrennt' : e.message; state.className = 'state err'; }
+        await sleep(Math.min(5000, 1000 * fails));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+
+  function addTile(cam) {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    tile.innerHTML = '<img alt=""><div class="bar"><span><b></b> <span class="world"></span></span><span class="state">verbinde…</span></div>';
+    const img = tile.querySelector('img'), state = tile.querySelector('.state');
+    tile.querySelector('b').textContent = cam.id;
+    tile.querySelector('.world').textContent = cam.world;
+    img.alt = 'Kamera ' + cam.id;
+    tile.onclick = () => { fullId = cam.id; fullImg.alt = img.alt; full.classList.add('open'); play(cam.id, fullImg, null); };
+    tiles.set(cam.id, tile);
+    play(cam.id, img, state);
+    return tile;
+  }
+
+  full.onclick = () => { fullId = null; full.classList.remove('open'); fullImg.removeAttribute('src'); };
+
+  async function refresh() {
+    try {
+      const res = await fetch('/api/cameras', { cache: 'no-store' });
+      if (res.status === 401) { meta.textContent = 'Token ungültig'; return; }
+      if (!res.ok) throw new Error(res.status);
+      const cams = await res.json();
+      const ids = new Set(cams.map(c => c.id));
+      for (const [id, tile] of tiles) if (!ids.has(id)) { tile.remove(); tiles.delete(id); }
+      for (const cam of cams) if (!tiles.has(cam.id)) grid.appendChild(addTile(cam));
+      grid.querySelector('.empty')?.remove();
+      if (!cams.length) grid.innerHTML = '<div class="empty">Keine Kameras. Im Spiel mit /cam create &lt;name&gt; anlegen.</div>';
+      meta.textContent = cams.length + (cams.length === 1 ? ' Kamera' : ' Kameras');
+    } catch (e) {
+      meta.textContent = 'Server nicht erreichbar';
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+</body>
+</html>

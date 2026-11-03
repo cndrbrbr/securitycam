@@ -20,6 +20,16 @@ In den `plugins/`-Ordner kopieren und den Server neu starten.
 - `/cam list` – Übersicht öffnen
 - `/cam view <name>` – Kamera im Spectator-Modus ansehen
 - `/cam exit` oder Shift – vorige Position und Spielmodus wiederherstellen
+- `/cam web` – URL der Web-Ansicht anzeigen (OP)
+
+## Web-Ansicht
+Das Plugin rendert die Kamerabilder selbst (Raycasting über die Blöcke, ca. 320×180 bei 4 fps, Nachtsicht-Modus bei Dunkelheit) und stellt sie über einen eingebauten Webserver bereit:
+
+- Übersicht: `http://<server>:8090/?token=<token>` – Admins sehen die URL mit `/cam web`, sie steht auch beim Start im Log
+- Live-Stream (MJPEG): `/cam/<name>.mjpg`, Einzelbild: `/cam/<name>.jpg`, Kameraliste: `/api/cameras`
+- Der Token wird beim ersten Start zufällig erzeugt und in `plugins/SecurityCams/config.yml` gespeichert; dort lassen sich auch Port, Auflösung, fps und Sichtweite einstellen.
+- Gerendert wird nur, solange jemand zusieht. Chunks um beobachtete Kameras bleiben dafür geladen.
+- Die Ansicht ist eine vereinfachte Darstellung (Blockfarben, Spieler/Mobs als Quader mit Namen), kein echtes Minecraft-Bild.
 
 ## Berechtigungen
 - `securitycams.use` (Standard: alle)
