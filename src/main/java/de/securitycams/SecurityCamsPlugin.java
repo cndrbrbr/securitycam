@@ -18,6 +18,7 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerToggleSneakEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
@@ -45,6 +46,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
     private File cameraFile;
     private File sessionFile;
     private NamespacedKey cameraKey;
+    private UUID attaching;
 
     private static final class ViewSession {
         private final String cameraId;
@@ -52,6 +54,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         private final GameMode mode;
         private final UUID standId;
         private boolean attached;
+        private int reattachCount;
         private ViewSession(String cameraId, Location previous, GameMode mode, UUID standId) {
             this.cameraId = cameraId; this.previous = previous; this.mode = mode; this.standId = standId;
         }
@@ -131,7 +134,16 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         player.sendMessage(ChatColor.YELLOW + "Unterbrochene Kameraansicht wurde beendet.");
     }
 
-    // Verhindert freies Umherfliegen: Sobald der Spieler die Kamera verlässt (Shift), endet die Ansicht.
+    // Verhindert freies Umherfliegen: Verliert der Spieler das Kameraziel ohne Shift, wird es neu gesetzt.
+    // setSpectatorTarget teleportiert intern mit Ursache SPECTATE; diese Teleports dürfen nicht blockiert werden.
+    private boolean attach(Player player, org.bukkit.entity.Entity stand) {
+        attaching = player.getUniqueId();
+        try { player.setSpectatorTarget(stand); }
+        finally { attaching = null; }
+        org.bukkit.entity.Entity target = player.getSpectatorTarget();
+        return target != null && target.getUniqueId().equals(stand.getUniqueId());
+    }
+
     private void checkViewers() {
         for (Map.Entry<UUID, ViewSession> entry : new ArrayList<>(viewers.entrySet())) {
             ViewSession session = entry.getValue();
@@ -139,8 +151,27 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
             Player player = Bukkit.getPlayer(entry.getKey());
             if (player == null) continue;
             org.bukkit.entity.Entity target = player.getSpectatorTarget();
-            if (target == null || !target.getUniqueId().equals(session.standId) || !target.isValid()) stopViewing(player, true);
+            if (target != null && target.getUniqueId().equals(session.standId)) continue;
+            org.bukkit.entity.Entity stand = Bukkit.getEntity(session.standId);
+            if (stand == null || !stand.isValid()) {
+                getLogger().info("Ansicht " + player.getName() + "/" + session.cameraId + " beendet: Kamera-Entity ungültig");
+                stopViewing(player, true);
+                continue;
+            }
+            session.reattachCount++;
+            if (session.reattachCount <= 3 || session.reattachCount % 100 == 0)
+                getLogger().info("Ansicht " + player.getName() + "/" + session.cameraId + ": Ziel verloren (" + (target == null ? "null" : target.getType()) + "), neu gesetzt #" + session.reattachCount);
+            if (player.getLocation().distanceSquared(stand.getLocation()) > 1) player.teleport(stand.getLocation());
+            attach(player, stand);
         }
+    }
+
+    // Shift beendet die Kameraansicht.
+    @EventHandler public void onSneak(PlayerToggleSneakEvent event) {
+        ViewSession session = viewers.get(event.getPlayer().getUniqueId());
+        if (session == null || !session.attached || !event.isSneaking()) return;
+        getLogger().info("Ansicht " + event.getPlayer().getName() + "/" + session.cameraId + " beendet: Shift");
+        stopViewing(event.getPlayer(), true);
     }
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -235,7 +266,8 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
 
     // Zuschauer-Teleport zu anderen Spielern (Zuschauermenü) während der Kameraansicht sperren.
     @EventHandler public void onTeleport(PlayerTeleportEvent event) {
-        if (event.getCause() == PlayerTeleportEvent.TeleportCause.SPECTATE && viewers.containsKey(event.getPlayer().getUniqueId()))
+        if (event.getCause() == PlayerTeleportEvent.TeleportCause.SPECTATE && viewers.containsKey(event.getPlayer().getUniqueId())
+                && !event.getPlayer().getUniqueId().equals(attaching))
             event.setCancelled(true);
     }
 
@@ -266,7 +298,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (!player.isOnline() || viewers.get(player.getUniqueId()) != session) return;
             if (!stand.isValid()) { stopViewing(player, false); player.sendMessage("Kamera konnte nicht geöffnet werden."); return; }
-            player.setSpectatorTarget(stand);
+            if (!attach(player, stand)) getLogger().warning("Kameraziel für " + player.getName() + "/" + id + " konnte nicht gesetzt werden");
             session.attached = true;
             player.sendMessage(ChatColor.GREEN + "Kamera: " + id + ChatColor.GRAY + " | Verlassen: Shift oder /cam exit");
         }, 2L);
