@@ -1,6 +1,6 @@
 # SecurityCams – Bedienungsanleitung für Spieler und Admins
 
-**Version:** 0.1.0 (Spigot-Prototyp)  
+**Version:** 0.2.0 (Spigot 26.3)  
 **Sprache:** Deutsch
 
 ## Was ist SecurityCams?
@@ -65,6 +65,22 @@ Die aktuelle Blickposition und Blickrichtung werden unter dem Namen `eingang` ge
 
 Dadurch wird der gespeicherte Kamerastandort gelöscht. Es erfolgt derzeit keine zusätzliche Bestätigung.
 
+### Web-Ansicht im Browser
+
+Alle Kameras lassen sich live im Browser ansehen. Admins erhalten die Adresse mit:
+
+```text
+/cam web
+```
+
+Die Adresse hat die Form `http://<server>:8090/?token=<schlüssel>` und steht auch beim Serverstart im Log. Gib sie nur an Personen weiter, die die Kameras sehen dürfen – wer den Schlüssel hat, sieht alle Kameras.
+
+- Jede Kamera erscheint als Kachel mit Status **LIVE**; ein Klick vergrößert sie.
+- Neue oder gelöschte Kameras erscheinen bzw. verschwinden nach spätestens 10 Sekunden von selbst.
+- Nach einem Serverneustart verbindet sich die Seite automatisch neu.
+- Das Bild ist eine vereinfachte Darstellung: Blöcke in ihren Kartenfarben, Spieler und Mobs als Quader, Spieler mit Namen. Nachts schaltet die Kamera auf Nachtsicht (IR).
+- Port, Auflösung, Bildrate und Sichtweite stellt der Serveradmin in `plugins/SecurityCams/config.yml` ein; `web.enabled: false` schaltet die Web-Ansicht ab.
+
 ## Befehlsübersicht
 
 | Befehl | Zweck | Berechtigung |
@@ -74,6 +90,7 @@ Dadurch wird der gespeicherte Kamerastandort gelöscht. Es erfolgt derzeit keine
 | `/cam exit` | Ansicht verlassen (auch per Shift) | – |
 | `/cam create <name>` | Kamera speichern | `securitycams.admin` |
 | `/cam delete <name>` | Kamera löschen | `securitycams.admin` |
+| `/cam web` | Adresse der Web-Ansicht anzeigen | `securitycams.admin` |
 
 **Standardmäßig** darf jeder Spieler die vorhandenen Kameras ansehen (`securitycams.use`). Kamera-Erstellung und Löschen sind nur für OPs erlaubt. Ein Serveradmin kann diese Berechtigungen über ein Permissions-Plugin ändern.
 
@@ -89,13 +106,16 @@ Prüfe den Namen oder lass dir mit `/cam list` die gespeicherten Kameras zeigen.
 Das Plugin zeigt eine Kamera-Perspektive im Zuschauer-Modus. Es besitzt noch keinen Überwachungsmonitor als Block und keine frei drehbare Kamera.
 
 **Kann ich alte Aufnahmen ansehen?**  
-Noch nicht. MP4-Videoaufzeichnungen, Wiedergabe und Aufzeichnungsarchiv sind für eine spätere Version geplant. Ein reines Spigot-Plugin kann nicht selbst das Bild der Minecraft-Spielwelt als MP4 rendern; dafür ist ein zusätzlicher Aufnahme-Client erforderlich.
+Nein. Die Web-Ansicht ist eine reine Liveansicht: Bilder werden nur erzeugt, solange jemand zusieht, und nirgends gespeichert. Eine Aufzeichnung ist für eine spätere Version denkbar.
+
+**Die Web-Ansicht zeigt „Token ungültig“ oder „Zugriff verweigert“.**  
+Öffne die vollständige Adresse aus `/cam web` inklusive `?token=…`.
 
 **Was passiert nach einem Serverneustart?**  
 Gespeicherte Kamerapositionen werden in `plugins/SecurityCams/cameras.yml` gespeichert und beim Start geladen. Stürzt der Server während einer Kameraansicht ab, wirst du beim nächsten Login automatisch an deinen vorherigen Standort zurückgesetzt und erhältst deinen vorherigen Spielmodus zurück.
 
 ## Hinweise
 
-- Diese Anleitung bezieht sich auf den aktuellen Entwicklungsstand **0.1.0**.
-- Das Plugin ist noch nicht auf einem produktiven Spigot-Server verifiziert.
+- Diese Anleitung bezieht sich auf den aktuellen Entwicklungsstand **0.2.0**.
+- Getestet auf einem Spigot-26.3-Testserver, noch nicht auf einem produktiven Server.
 - Für Videomitschnitte sollten Serverbetreiber die Mitspieler informieren und geeignete Datenschutz- und Aufbewahrungsregeln festlegen.
