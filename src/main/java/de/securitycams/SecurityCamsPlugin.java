@@ -39,14 +39,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.security.SecureRandom;
+import java.util.HexFormat;
 
 public final class SecurityCamsPlugin extends JavaPlugin implements Listener, TabCompleter {
-    private final Map<String, Location> cameras = new HashMap<>();
+    private final Map<String, Location> cameras = new ConcurrentHashMap<>();
     private final Map<UUID, ViewSession> viewers = new HashMap<>();
     private File cameraFile;
     private File sessionFile;
     private NamespacedKey cameraKey;
     private UUID attaching;
+    private CameraStreams streams;
+    private WebServer web;
+    private String webUrl;
 
     private static final class ViewSession {
         private final String cameraId;
@@ -72,10 +78,43 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         getServer().getPluginManager().registerEvents(this, this);
         Bukkit.getScheduler().runTaskTimer(this, this::checkViewers, 1L, 1L);
         for (Player player : Bukkit.getOnlinePlayers()) restoreStaleSession(player);
+        startWeb();
         getLogger().info("SecurityCams bereit: " + cameras.size() + " Kameras");
     }
 
+    private void startWeb() {
+        saveDefaultConfig();
+        if (!getConfig().getBoolean("web.enabled", true)) return;
+        String token = getConfig().getString("web.token", "");
+        if (token == null || token.isBlank()) {
+            byte[] bytes = new byte[18];
+            new SecureRandom().nextBytes(bytes);
+            token = HexFormat.of().formatHex(bytes);
+            getConfig().set("web.token", token);
+            saveConfig();
+        }
+        System.setProperty("java.awt.headless", "true");
+        String bind = getConfig().getString("web.bind", "0.0.0.0");
+        int port = getConfig().getInt("web.port", 8090);
+        streams = new CameraStreams(this, cameras);
+        web = new WebServer(this, streams, cameras, token, getConfig().getInt("web.max-streams", 16));
+        try {
+            web.start(bind, port);
+            streams.start();
+            String host = bind.equals("0.0.0.0") ? (Bukkit.getIp().isBlank() ? "<server-ip>" : Bukkit.getIp()) : bind;
+            webUrl = "http://" + host + ":" + port + "/?token=" + token;
+            getLogger().info("Web-Ansicht: " + webUrl);
+        } catch (IOException e) {
+            getLogger().severe("Webserver konnte nicht starten (Port " + port + "): " + e.getMessage());
+            streams.stop();
+            web = null;
+            streams = null;
+        }
+    }
+
     @Override public void onDisable() {
+        if (web != null) web.stop();
+        if (streams != null) streams.stop();
         for (UUID uuid : new ArrayList<>(viewers.keySet())) {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null) stopViewing(player, false);
@@ -185,6 +224,11 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
         if (!player.hasPermission("securitycams.use")) { player.sendMessage("Keine Berechtigung."); return true; }
         if (args.length == 0) { help(player); return true; }
         if (action.equals("list")) { openMenu(player); return true; }
+        if (action.equals("web")) {
+            if (!player.hasPermission("securitycams.admin")) player.sendMessage("Keine Berechtigung.");
+            else player.sendMessage(webUrl == null ? "Web-Ansicht ist deaktiviert." : ChatColor.AQUA + "Web-Ansicht: " + webUrl);
+            return true;
+        }
         if (args.length < 2) { help(player); return true; }
         String id = args[1].toLowerCase(Locale.ROOT);
         if (!id.matches("[a-z0-9_-]{1,32}")) { player.sendMessage("Kameraname: 1-32 Zeichen (a-z, 0-9, _ und -)."); return true; }
@@ -215,7 +259,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
     @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             List<String> actions = new ArrayList<>(List.of("list", "view", "exit"));
-            if (sender.hasPermission("securitycams.admin")) actions.addAll(List.of("create", "delete"));
+            if (sender.hasPermission("securitycams.admin")) actions.addAll(List.of("create", "delete", "web"));
             return actions.stream().filter(a -> a.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && Set.of("view", "delete").contains(args[0].toLowerCase(Locale.ROOT)))
@@ -225,7 +269,7 @@ public final class SecurityCamsPlugin extends JavaPlugin implements Listener, Ta
 
     private void help(Player player) {
         player.sendMessage(ChatColor.GOLD + "SecurityCams: /cam list, /cam view <name>, /cam exit");
-        player.sendMessage(ChatColor.GRAY + "Administratoren: /cam create <name>, /cam delete <name>");
+        player.sendMessage(ChatColor.GRAY + "Administratoren: /cam create <name>, /cam delete <name>, /cam web");
     }
 
     private void openMenu(Player player) {
